@@ -4,6 +4,7 @@
 #include <cassert>
 #include <chrono>
 #include <cstdlib>
+#include <functional>
 #include <memory>
 #include <ncursesw/cursesw.h>
 #include <random>
@@ -32,8 +33,8 @@ struct ncurses {
 // Encapsulate a two-dimensional grid.
 class grid {
 public:
-    const int width;
-    const int height;
+    int width;
+    int height;
 
     grid(int w, int h)
         : width{w}
@@ -44,15 +45,41 @@ public:
     bool&
     operator()(int x, int y)
     {
-        assert(0 <= x && x < width && 0 <= y && y < height);
-        return data[x + y * width];
+        return data[((x+width)%width) + ((y+height)%height) * width];
     }
 
-    const bool&
+    bool&
     operator()(int x, int y) const
     {
-        assert(0 <= x && x < width && 0 <= y && y < height);
-        return data[x + y * width];
+        return data[((x+width)%width) + ((y+height)%height) * width];
+    }
+
+    void
+    big_bang()
+    {
+        auto random_int_generator = std::bind(std::uniform_int_distribution<>(0,10),std::default_random_engine());
+        for ( int i = 0; i < width*height; i++ ) {
+            if (!data[i]) {
+                data[i] = bool(random_int_generator()==0);
+            }
+        }
+    }
+    void
+    invert()
+    {
+        for ( int i = 0; i < width*height; i++ ) {
+            data[i] = !data[i];
+        }
+    }
+    void
+    thanos()
+    {
+        auto random_int_generator = std::bind(std::uniform_int_distribution<>(0,1),std::default_random_engine());
+        for ( int i = 0; i < width*height; i++ ) {
+            if (data[i]) {
+                data[i] = bool(random_int_generator());
+            }
+        }
     }
 
 private:
@@ -68,8 +95,8 @@ public:
         , b{width, height}
     {}
 
-    const grid&
-    front() const
+    grid&
+    front()
     {
         return first ? a : b;
     }
@@ -104,35 +131,25 @@ private:
 // - Any dead cell with exactly three live neighbors becomes a live cell, as if
 //   by reproduction.
 void
-next_generation(const grid& in, grid& out)
+next_generation(grid& in, grid& out, bool wrap)
 {
     assert(in.width == out.width && in.height == out.height);
 
     for (auto y = 0; y != in.height; ++y) {
         for (auto x = 0; x != in.width; ++x) {
-            auto left = x != 0;
-            auto up = y != 0;
-            auto right = x != in.width - 1;
-            auto down = y != in.height - 1;
-
-            auto currently_alive = in(x, y);
-
-            // This code causes strict-overflow warnings that can be safely
-            // ignored.
-            auto neighbours = (left && up && in(x - 1, y - 1) ? 1 : 0) +
-                              (left && in(x - 1, y) ? 1 : 0) +
-                              (left && down && in(x - 1, y + 1) ? 1 : 0) +
-                              (up && in(x, y - 1) ? 1 : 0) +
-                              (down && in(x, y + 1) ? 1 : 0) +
-                              (right && up && in(x + 1, y - 1) ? 1 : 0) +
-                              (right && in(x + 1, y) ? 1 : 0) +
-                              (right && down && in(x + 1, y + 1) ? 1 : 0);
-
-            if (currently_alive) {
-                out(x, y) = neighbours == 2 || neighbours == 3;
-            } else {
-                out(x, y) = neighbours == 3;
-            }
+            auto left = wrap | (x != 0);
+            auto up = wrap | (y != 0);
+            auto right = wrap | (x != in.width - 1);
+            auto down = wrap | (y != in.height - 1);
+            int neighbours = (left && up && in(x - 1, y - 1)) +
+                             (left && in(x - 1, y)) +
+                             (left && down && in(x - 1, y + 1)) +
+                             (up && in(x, y - 1)) +
+                             (down && in(x, y + 1)) +
+                             (right && up && in(x + 1, y - 1)) +
+                             (right && in(x + 1, y)) +
+                             (right && down && in(x + 1, y + 1));
+            out(x, y) = (neighbours == 3 || (in(x, y) && neighbours == 2));
         }
     }
 }
@@ -145,7 +162,7 @@ public:
         : buffer{width, height}
     {
         auto& grid = buffer.back();
-        auto seed = std::chrono::system_clock::now().time_since_epoch().count();
+        unsigned long seed = std::chrono::system_clock::now().time_since_epoch().count();
         auto frequency = 3; // lower means more initial alive cells
 
         std::default_random_engine engine{seed};
@@ -159,7 +176,7 @@ public:
     }
 
     void
-    render() const
+    render()
     {
         assert(buffer.front().height % 2 == 0);
 
@@ -184,45 +201,71 @@ public:
     }
 
     void
-    tick()
+    tick(bool wrap)
     {
-        next_generation(buffer.front(), buffer.back());
+        next_generation(buffer.front(), buffer.back(), wrap);
         buffer.swap();
     }
 
+    void
+    big_bang()
+    {
+        buffer.front().big_bang();
+    }
+
+    void
+    invert()
+    {
+        buffer.front().invert();
+    }
+    void
+    thanos()
+    {
+        buffer.front().thanos();
+    }
 private:
     double_buffered_grid buffer;
 };
 
 } // namespace
 
+std::unique_ptr<game_of_life> new_game() {
+    auto width = 0;
+    auto height = 0;
+    getmaxyx(stdscr, height, width);
+    auto width_env = std::getenv("GOL_WIDTH");
+    auto height_env = std::getenv("GOL_HEIGHT");
+    if (width_env) {
+        width = std::stoi(width_env);
+    }
+    if (height_env) {
+        height = std::stoi(height_env);
+    }
+    return std::unique_ptr<game_of_life>(new game_of_life{width, height * 2});
+}
+
 int
 main()
 {
-    constexpr auto min_tick_ms = 16;
-    constexpr auto max_tick_ms = 1024;
-
-    auto width = 0;
-    auto height = 0;
-    auto tick_ms = 32;
-    auto running = true;
     ncurses nc;
-
-    getmaxyx(stdscr, height, width);
-    std::unique_ptr<game_of_life> game{new game_of_life{width, height * 2}};
-
+    constexpr auto min_tick_ms = 8;
+    constexpr auto max_tick_ms = 1024;
+    auto           tick_ms     = min_tick_ms;
     timeout(tick_ms);
-    game->render();
 
+    auto game = new_game();
+    game->render();
+    auto random_int_generator = std::bind(std::uniform_int_distribution<>(0,100000),std::default_random_engine());
+    auto running = true;
+    bool wrap = true;
     while (true) {
+        auto random_selector = random_int_generator();
         auto key = getch();
 
         // If we resized, generate a new board with the appropriate size
-        if (key == KEY_RESIZE) {
-            getmaxyx(stdscr, height, width);
-            game.reset(new game_of_life{width, height * 2});
+        if (key == KEY_RESIZE || key == 'r') {
+            game = new_game();
             game->render();
-            continue;
         }
 
         // Decrease speed
@@ -238,13 +281,37 @@ main()
         }
 
         // Play/pause
+        if (key == 'w') {
+            wrap = !wrap;
+        }
+
+        // Play/pause
         if (key == 'p' || key == ' ') {
             running = !running;
         }
 
+        // big bang 
+        if (key == 'b' || (running && random_selector == 0)) {
+            game->big_bang();
+            game->tick(wrap);
+            game->render();
+        }
+
+        // invert
+        if (key == 'i' || (running && random_selector == 1)) {
+            game->invert();
+            game->render();
+        }
+
+        // thanos snap
+        if (key == 't' || (running && random_selector == 2)) {
+            game->thanos();
+            game->render();
+        }
+
         // If the game is paused you can still step through generations
         if (running || key == 's') {
-            game->tick();
+            game->tick(wrap);
             game->render();
         }
 
